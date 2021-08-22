@@ -125,13 +125,18 @@ impl LexerGenerator {
 
                 Pattern::Regex(regex_pat.into_boxed_str())
             } else if pattern.starts_with('"') && pattern.ends_with('"') {
-                let pattern = pattern.trim_matches('"');
+                let pattern = pattern.trim_matches('"')
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t")
+                    .replace("\\r", "\r")
+                    .replace("\\0", "\0")
+                    .replace("\\\\", "\\");
 
                 if pattern.is_empty() {
                     Err(GeneratorError::InvalidPatternFixed(line_no))?
                 }
 
-                Pattern::Fixed(pattern.to_string().into_boxed_str())
+                Pattern::Fixed(pattern.into_boxed_str())
             } else {
                 Err(GeneratorError::InvalidPatternType(line_no))?
             };
