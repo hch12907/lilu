@@ -1,0 +1,22 @@
+# simple token lexing
+Plus       := "+"
+Minus      := "-"
+Multiply   := "*"
+Divide     := "/"
+PlusEq     := "+="
+MinusEq    := "-="
+MultiplyEq := "*="
+DivideEq   := "/="
+LogicEqual := "=="
+AbsEqual   := "==="
+
+# integer lexing
+OctNumber  := /0o([0-7]+)/
+HexNumber  := /0x([0-9A-Fa-f]+)/
+DecNumber  := /([1-9]+[0-9]*)/
+
+# string lexing
+Str        := /"((\\.|[^"])*)"/
+
+# ignore whitespace
+_          := " "
