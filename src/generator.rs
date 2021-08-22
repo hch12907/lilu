@@ -162,16 +162,19 @@ impl LexerGenerator {
     pub fn generate(self) -> String {
         let mut flat_map = self.map;
         flat_map.sort_by(|(lhs_name, lhs_pat), (rhs_name, rhs_pat)| {
-            match (lhs_name, rhs_name) {
-                (None, None) | (Some(_), Some(_)) => match (lhs_pat, rhs_pat) {
-                    (Pattern::Fixed(x), Pattern::Fixed(y)) => x.cmp(y).reverse(),
-                    (Pattern::Fixed(_), Pattern::Regex(_)) => Ordering::Less,
-                    (Pattern::Regex(_), Pattern::Fixed(_)) => Ordering::Greater,
-                    (Pattern::Regex(_), Pattern::Regex(_)) => Ordering::Equal,
-                },
-
-                (None, Some(_)) => Ordering::Less,
-                (Some(_), None) => Ordering::Greater,
+            match (lhs_pat, rhs_pat) {
+                (Pattern::Fixed(x), Pattern::Fixed(y)) => match (lhs_name, rhs_name) {
+                    (None, None) | (Some(_), Some(_)) => x.cmp(y).reverse(),
+                    (Some(_), None) => Ordering::Greater,
+                    (None, Some(_)) => Ordering::Less,
+                }
+                (Pattern::Fixed(_), Pattern::Regex(_)) => Ordering::Less,
+                (Pattern::Regex(_), Pattern::Fixed(_)) => Ordering::Greater,
+                (Pattern::Regex(_), Pattern::Regex(_)) => match (lhs_name, rhs_name) {
+                    (None, Some(_)) => Ordering::Less,
+                    (Some(_), None) => Ordering::Greater,
+                    (None, None) | (Some(_), Some(_)) => Ordering::Equal,
+                }
             }
         });
 
@@ -333,21 +336,31 @@ impl<'a> Iterator for Lexer<'a> {
                     ));
 
                     let depth = "                "; // 16
-                    iterator_impl.push_str(depth);
-                    iterator_impl.push_str(&format!(
-                        "let captured = self.regexes[{}].captures(self.src.as_str()).unwrap();\n",
-                        regex_idx
-                    ));
-                    iterator_impl.push_str(depth);
-                    iterator_impl.push_str("let matched = captured.get(0).unwrap();\n");
-                    iterator_impl.push_str(depth);
-                    iterator_impl.push_str("let result = captured.get(1).unwrap();\n");
+                    if id.is_some() {
+                        iterator_impl.push_str(depth);
+                        iterator_impl.push_str(&format!(
+                            "let captured = self.regexes[{}].captures(self.src.as_str()).unwrap();\n",
+                            regex_idx
+                        ));
+                        iterator_impl.push_str(depth);
+                        iterator_impl.push_str("let matched = captured.get(0).unwrap();\n");
+                        iterator_impl.push_str(depth);
+                        iterator_impl.push_str("let result = captured.get(1).unwrap();\n");
+                    } else {
+                        iterator_impl.push_str(depth);
+                        iterator_impl.push_str(&format!(
+                            "let matched = self.regexes[{}].find(self.src.as_str()).unwrap();\n",
+                            regex_idx
+                        ));
+                    }
+
                     iterator_impl.push_str(depth);
                     iterator_impl.push_str("for _ in 0..matched.as_str().len() {\n");
                     iterator_impl.push_str(depth);
                     iterator_impl.push_str("    self.eat();\n");
                     iterator_impl.push_str(depth);
                     iterator_impl.push_str("}\n");
+
                     if let Some(id) = id {
                         iterator_impl.push_str(depth);
                         iterator_impl.push_str(&format!(
@@ -355,6 +368,7 @@ impl<'a> Iterator for Lexer<'a> {
                             id
                         ));
                     }
+
                     let depth = "            "; // 12
                     iterator_impl.push_str(depth);
                     iterator_impl.push_str("}\n");
