@@ -53,18 +53,18 @@ pub enum Pattern {
 ///
 /// The grammar of a pattern file is as follows:
 ///
-/// ```
-/// # .*                ; lines beginning with a "#" is a comment
-/// <name>         := "[char]+" ; this is a fixed pattern
-/// <name>         := /[char]+/ ; this is a regex pattern
-/// <name> <vars>+ := /[char]+/ ; this is a regex-var pattern.
+/// ```text
+/// ## lines beginning with a "#" is a comment
+/// fixed_pattern     ::= <name> ":=" '"' <character-sequence> '"'
+/// regex_pattern     ::= <name> ":=" "/" <regular-expression> "/"
+/// regex_var_pattern ::= <name> <vars>+ ":=" "/" <regular-expression> "/"
 /// ```
 ///
 /// Other than a lexer, an enum `Token` will also be generated.
 /// For example, given the following pattern file:
 ///
-/// ```
-/// # this is a pattern file
+/// ```text
+/// ## this is a pattern file
 /// Multiply            := "*"
 /// Exponent            := "**"
 /// Binary num suffix   := /0b([01]+)([uU]+)/
@@ -90,7 +90,9 @@ pub enum Pattern {
 ///
 /// For the "fixed" patterns, the lexer is greedy. Again using the above pattern
 /// file as example, given the input `***`, the resulting tokens will be
-/// `[Exponent, Multiply]`.
+/// `[Exponent, Multiply]`. Furthermore, the lexer will first try to match fixed
+/// patterns. If none of them match it will proceed with the regex patterns with
+/// top-to-bottom precedence (the top regex patterns will be matched first).
 /// 
 /// If the name begins with `_`, the generated lexer will accept tokens matching
 /// the pattern, but the token will be discarded.
