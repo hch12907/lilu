@@ -1,22 +1,25 @@
 # simple token lexing
-Plus       := "+"
-Minus      := "-"
-Multiply   := "*"
-Divide     := "/"
-PlusEq     := "+="
-MinusEq    := "-="
-MultiplyEq := "*="
-DivideEq   := "/="
-LogicEqual := "=="
-AbsEqual   := "==="
+Plus                    := "+"
+Minus                   := "-"
+Multiply                := "*"
+Divide                  := "/"
+PlusEq                  := "+="
+MinusEq                 := "-="
+MultiplyEq              := "*="
+DivideEq                := "/="
+LogicEqual              := "=="
+AbsEqual                := "==="
 
 # integer lexing
-OctNumber  := /0o([0-7]+)/
-HexNumber  := /0x([0-9A-Fa-f]+)/
-DecNumber  := /([1-9]+[0-9]*)/
+OctNumber               := /0o([0-7]+)/
+HexNumber               := /0x([0-9A-Fa-f]+)/
+DecNumber num suffix    := /([1-9]+[0-9]*)([uU]*)/
 
 # string lexing
-Str        := /"((\\.|[^"])*)"/
+Str                     := /"((\\.|[^"])*)"/
 
-# ignore whitespace
-_          := " "
+# ignore whitespace (this can be done with regex too)
+_                       := " "
+_                       := "\t"
+_                       := "\r"
+_                       := "\n"
