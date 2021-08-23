@@ -6,7 +6,8 @@ use std::collections::HashSet;
 /// to the generator.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GeneratorError {
-    /// This error is given when an unnamed pattern is found.
+    /// This error is given when an completely unnamed pattern (not even `_`)
+    /// is found.
     EmptyName(usize),
     /// This error is given when an empty pattern is found.
     EmptyPattern(usize),
@@ -14,7 +15,7 @@ pub enum GeneratorError {
     /// Right now there are 2 types: `"fixed"` pattern and `/regex/` pattern.
     InvalidPatternType(usize),
     /// This error is given when a fixed pattern is found to be invalid, such
-    /// as it being empty
+    /// as it being empty.
     #[allow(unused)] InvalidPatternFixed(usize),
     /// This error is given when a regex pattern is found to be invalid.
     /// The `Error` from the regex crate is provided for more information on the
@@ -29,12 +30,21 @@ pub enum GeneratorError {
     /// This error is generated when the pattern is already used, albeit with a
     /// different name.
     PatternExists(usize),
+    /// This error is generated when the pattern has variables, but the pattern
+    /// is either a fixed pattern, or an unnamed pattern.
+    UnexpectedVariable(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Pattern {
+    /// A Fixed pattern accepts only a fixed sequence of characters
     Fixed(Box<str>),
+    /// A Regex pattern accepts a sequence of characters that matches the regex
+    /// given, and the first capture group is stored
     Regex(Box<str>),
+    /// A RegexVar pattern is similar to a Regex pattern, but it can store an
+    /// arbitrary amount of capture groups with each of them named
+    RegexVar(Box<[Box<str>]>, Box<str>),
 }
 
 /// A lexer generator that receives a pattern file that describes various kinds
@@ -45,17 +55,20 @@ pub enum Pattern {
 ///
 /// ```
 /// # .*                ; lines beginning with a "#" is a comment
-/// <name> := "[char]+" ; this is a fixed pattern
-/// <name> := /[char]+/ ; this is a regex pattern
+/// <name>         := "[char]+" ; this is a fixed pattern
+/// <name>         := /[char]+/ ; this is a regex pattern
+/// <name> <vars>+ := /[char]+/ ; this is a regex-var pattern.
 /// ```
 ///
 /// Other than a lexer, an enum `Token` will also be generated.
 /// For example, given the following pattern file:
 ///
 /// ```
-/// Multiply := "*"
-/// Exponent := "**"
-/// Integer  := /([0-9]+)/
+/// # this is a pattern file
+/// Multiply            := "*"
+/// Exponent            := "**"
+/// Binary num suffix   := /0b([01]+)([uU]+)/
+/// Decimal             := /([0-9]+)/
 /// ```
 ///
 /// The resulting `Token` enum will be:
@@ -64,22 +77,23 @@ pub enum Pattern {
 /// enum Token {
 ///     Multiply,
 ///     Exponent,
-///     Integer(String),
+///     Binary { num: String, suffix: String },
+///     Decimal(String),
 ///     Unknown(char),
 /// }
 /// ```
 ///
-/// Notice that regex patterns will *always* carry a String, thus a capture group
-/// is always needed for regex patterns. Also notice that `Unknown(char)` is
-/// always added, for when an unknown character matching none of the patterns is
-/// encountered.
+/// Notice that regex patterns will *always* carry at least a String, thus a
+/// capture group is always needed for regex patterns. Also notice that
+/// `Unknown(char)` is always added, for when an unknown character matching none
+/// of the patterns is encountered.
 ///
 /// For the "fixed" patterns, the lexer is greedy. Again using the above pattern
 /// file as example, given the input `***`, the resulting tokens will be
 /// `[Exponent, Multiply]`.
 /// 
 /// If the name begins with `_`, the generated lexer will accept tokens matching
-/// the pattern, but the token will be disposed.
+/// the pattern, but the token will be discarded.
 pub struct LexerGenerator {
     map: Vec<(Option<String>, Pattern)>,
 }
@@ -110,6 +124,12 @@ impl LexerGenerator {
                 Err(GeneratorError::EmptyName(line_no))?
             }
 
+            let mut name_split = name.split(' ');
+            let name = name_split.next().unwrap().trim();
+            let vars = name_split
+                .map(|v| v.to_string().into_boxed_str())
+                .collect::<Box<_>>();
+
             if pattern.is_empty() {
                 Err(GeneratorError::EmptyPattern(line_no))?
             }
@@ -123,7 +143,15 @@ impl LexerGenerator {
                 let mut regex_pat = "^".to_string();
                 regex_pat.push_str(pattern);
 
-                Pattern::Regex(regex_pat.into_boxed_str())
+                if vars.is_empty() {
+                    Pattern::Regex(regex_pat.into_boxed_str())
+                } else {
+                    if !name.starts_with('_') {
+                        Pattern::RegexVar(vars, regex_pat.into_boxed_str())
+                    } else {
+                        Err(GeneratorError::UnexpectedVariable(line_no))?
+                    }
+                }
             } else if pattern.starts_with('"') && pattern.ends_with('"') {
                 let pattern = pattern.trim_matches('"')
                     .replace("\\n", "\n")
@@ -134,6 +162,10 @@ impl LexerGenerator {
 
                 if pattern.is_empty() {
                     Err(GeneratorError::InvalidPatternFixed(line_no))?
+                }
+
+                if !vars.is_empty() {
+                    Err(GeneratorError::UnexpectedVariable(line_no))?
                 }
 
                 Pattern::Fixed(pattern.into_boxed_str())
@@ -166,6 +198,10 @@ impl LexerGenerator {
     /// `Lexer`, and `Token`.
     pub fn generate(self) -> String {
         let mut flat_map = self.map;
+        // Make sure that regex patterns are all together, with no fixed patterns
+        // in between. This is because the other code below assumes that all regex
+        // patterns are consecutive. Furthermore, move the ignoring patterns up,
+        // with the assumption that they are encountered more often (e.g. whitespace).
         flat_map.sort_by(|(lhs_name, lhs_pat), (rhs_name, rhs_pat)| {
             match (lhs_pat, rhs_pat) {
                 (Pattern::Fixed(x), Pattern::Fixed(y)) => match (lhs_name, rhs_name) {
@@ -173,9 +209,10 @@ impl LexerGenerator {
                     (Some(_), None) => Ordering::Greater,
                     (None, Some(_)) => Ordering::Less,
                 }
-                (Pattern::Fixed(_), Pattern::Regex(_)) => Ordering::Less,
-                (Pattern::Regex(_), Pattern::Fixed(_)) => Ordering::Greater,
-                (Pattern::Regex(_), Pattern::Regex(_)) => match (lhs_name, rhs_name) {
+                (Pattern::Fixed(_), Pattern::Regex(_) | Pattern::RegexVar(_,_)) => Ordering::Less,
+                (Pattern::Regex(_) | Pattern::RegexVar(_,_), Pattern::Fixed(_)) => Ordering::Greater,
+                (Pattern::Regex(_) | Pattern::RegexVar(_,_),
+                 Pattern::Regex(_) | Pattern::RegexVar(_,_)) => match (lhs_name, rhs_name) {
                     (None, Some(_)) => Ordering::Less,
                     (Some(_), None) => Ordering::Greater,
                     (None, None) | (Some(_), Some(_)) => Ordering::Equal,
@@ -240,10 +277,22 @@ pub enum Token {
                 token_enum.push_str("    ");
                 token_enum.push_str(id.as_str());
                 token_enum.push_str(",\n");
-            } else {
+            } else if let Pattern::Regex(_) = pat {
                 token_enum.push_str("    ");
                 token_enum.push_str(id.as_str());
                 token_enum.push_str("(String),\n");
+            } else if let Pattern::RegexVar(vars, _) = pat {
+                token_enum.push_str("    ");
+                token_enum.push_str(id.as_str());
+                let mut var_list = String::from(" {\n");
+                for var in vars.iter() {
+                    var_list.push_str("        ");
+                    var_list.push_str(var);
+                    var_list.push_str(": String,\n")
+                }
+                var_list.push_str("    ");
+                var_list.push_str("},\n");
+                token_enum.push_str(&var_list);
             }
         }
         token_enum.push_str(TOKEN_ENUM_FOOTER);
@@ -261,7 +310,7 @@ impl<'a> Lexer<'a> {
         for (_id, pat) in &flat_map {
             let depth = "        ";
             match pat {
-                Pattern::Regex(r) => {
+                Pattern::Regex(r) | Pattern::RegexVar(_, r) => {
                     regexes_vec.push_str(depth);
                     regexes_vec.push_str(&format!(
                         "regexes.push(Regex::new(r#\"{}\"#).unwrap());\n",
@@ -309,6 +358,12 @@ impl<'a> Iterator for Lexer<'a> {
                 iterator_impl.push_str("else if ");
             };
 
+            if let Pattern::Regex(_) | Pattern::RegexVar(_, _) = pat {
+                if first_regex.is_none() {
+                    first_regex = Some(i);
+                }
+            }
+
             // condition and body of the if statement
             match pat {
                 Pattern::Fixed(f) => {
@@ -329,10 +384,6 @@ impl<'a> Iterator for Lexer<'a> {
                     iterator_impl.push_str("}\n")
                 },
                 Pattern::Regex(_r) => {
-                    if first_regex.is_none() {
-                        first_regex = Some(i);
-                    }
-
                     let regex_idx = i - first_regex.unwrap();
 
                     iterator_impl.push_str(&format!(
@@ -374,6 +425,48 @@ impl<'a> Iterator for Lexer<'a> {
                         ));
                     }
 
+                    let depth = "            "; // 12
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str("}\n");
+                },
+                Pattern::RegexVar(vars, _) => {
+                    let regex_idx = i - first_regex.unwrap();
+
+                    iterator_impl.push_str(&format!(
+                        "self.regexes[{}].is_match(self.src.as_str()) {{\n",
+                        regex_idx
+                    ));
+
+                    let id = id.as_ref().unwrap();
+                    let depth = "                "; // 16
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str(&format!(
+                        "let captured = self.regexes[{}].captures(self.src.as_str()).unwrap();\n",
+                        regex_idx
+                    ));
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str("let matched = captured.get(0).unwrap();\n");
+
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str("for _ in 0..matched.as_str().len() {\n");
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str("    self.eat();\n");
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str("}\n");
+
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str(&format!("return Some((location, Token::{} {{\n", id));
+                    for (i, var) in vars.iter().enumerate() {
+                        let depth = "                    "; // 20;
+                        iterator_impl.push_str(depth);
+                        iterator_impl.push_str(var);
+                        iterator_impl.push_str(&format!(
+                            ": captured.get({}).unwrap().as_str().to_string(),\n",
+                            i + 1
+                        ));
+                    }
+                    iterator_impl.push_str(depth);
+                    iterator_impl.push_str("}))\n");
                     let depth = "            "; // 12
                     iterator_impl.push_str(depth);
                     iterator_impl.push_str("}\n");
